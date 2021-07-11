@@ -33,6 +33,9 @@
 (require 'ivy)
 (require 'chimera)
 (require 'chimera-hydra)
+(require 's)
+
+(defconst rigpa-buffer-ring-name-prefix "rigpa-buffer-ring")
 
 (evil-define-state buffer
   "Buffer state."
@@ -146,15 +149,41 @@ happen quickly enough not to be noticeable."
       (rigpa-buffer-return-to-original)
       (evil-switch-to-windows-last-buffer))))
 
-(defun rigpa-buffer-setup-marks-table ()
+(defun rigpa-buffer--active-buffers ()
+  "Get active buffers."
+  (if (eq rigpa--complex rigpa-meta-tower-complex)
+      (seq-filter (lambda (buf)
+                    (s-starts-with-p rigpa-buffer-prefix (buffer-name buf)))
+                  (buffer-list))
+    (seq-filter (lambda (buf)
+                  (not (s-starts-with-p " " (buffer-name buf))))
+                (buffer-list))))
+
+(defun rigpa-buffer-create-ring ()
+  "Create the buffer ring upon entry into buffer mode."
+  (interactive)
+  ;; delete buffer ring and rebuild from scratch each time, for now,
+  ;; instead of maintaining a persistent buffer ring via hooks
+  (message "CREATING RING...")
+  (let* ((ring-name (if (eq rigpa--complex rigpa-meta-tower-complex)
+                        "2"
+                      "0")) ; TODO: derive from coordinates later
+         (buffer-ring-name (concat rigpa-buffer-ring-name-prefix
+                                   "-"
+                                   ring-name)))
+    (buffer-ring-torus-delete-ring buffer-ring-name)
+    (dolist (buf (rigpa-buffer--active-buffers))
+      (buffer-ring-add buffer-ring-name buf))))
+
+(defun rigpa-buffer--setup-buffer-marks-table ()
   "Initialize the buffer marks hashtable and add an entry for the
 current ('original') buffer."
   (interactive)
   (defvar rigpa-buffer-marks-hash
     (make-hash-table :test 'equal))
-  (rigpa-buffer-save-original))
+  (rigpa-buffer--save-original-buffer))
 
-(defun rigpa-buffer-save-original ()
+(defun rigpa-buffer--save-original-buffer ()
   "Save current buffer as original buffer."
   (interactive)
   (rigpa-buffer-set-mark ?0))
@@ -180,22 +209,10 @@ current ('original') buffer."
   (rigpa-buffer-return-to-original)
   (ivy-switch-buffer))
 
-;; TODO: implement a dynamic ring buffer storing every visited buffer
-;; then, buffer mode retains a pointer to the current position (buffer)
-;; and reverses direction of traversal each time buffer mode is exited
-;; h and l should then use this wrapped form of previous and next buffer
-;; we also wouldn't need to rely on evil-switch-to-windows-last-buffer
-;; so there would be no need to "flash back"
-;; this should be an independent utility library so that it can be used
-;; in all modes that need an intuitive way to keep track of recency
-;; maybe `recency-ring`, has a nice... ring to it
-
-;; See the existing packages "dynamic-ring" and "buffer-ring" that
-;; probably do this very thing. But in this case it may be better to
-;; simply use (buffer-list) directly which appears to keep track of recency
 (defhydra hydra-buffer (:columns 3
-                        :body-pre (progn (rigpa-buffer-setup-marks-table) ; maybe put in ad-hoc entry
-                                         (chimera-hydra-signal-entry chimera-buffer-mode))
+                        :body-pre (progn (rigpa-buffer--setup-buffer-marks-table)
+                                         (chimera-hydra-signal-entry chimera-buffer-mode)
+                                         (rigpa-buffer-create-ring)) ; maybe put in ad-hoc entry
                         :post (progn (rigpa-buffer-flash-to-original)
                                      (chimera-hydra-portend-exit chimera-buffer-mode t))
                         :after-exit (chimera-hydra-signal-exit chimera-buffer-mode
@@ -203,10 +220,10 @@ current ('original') buffer."
   "Buffer mode"
   ("s-b" evil-switch-to-windows-last-buffer "switch to last" :exit t)
   ("b" evil-switch-to-windows-last-buffer "switch to last" :exit t)
-  ("h" previous-buffer "previous")
+  ("h" buffer-ring-prev-buffer "previous")
   ("j" ignore nil)
   ("k" ignore nil)
-  ("l" next-buffer "next")
+  ("l" buffer-ring-next-buffer "next")
   ("y" rigpa-buffer-yank "yank")
   ("p" rigpa-buffer-paste "paste")
   ("n" (lambda ()

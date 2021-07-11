@@ -94,19 +94,6 @@
     ;; the name of the tower
     (narrow-to-region start end)))
 
-(defun rigpa--switch-to-tower (tower-id)
-  "View the tower indicated, reflecting the state of the ground buffer."
-  ;; "view" tower
-  ;; this should be replaced with meta buffer mode and any applicable side-effects
-  (interactive)
-  (let ((tower (rigpa--tower tower-id)))
-    (switch-to-buffer (rigpa--buffer-name tower))
-    (rigpa--tower-view-narrow tower)
-    (rigpa--tower-view-reflect-ground tower)
-    (with-current-buffer (rigpa--get-ground-buffer)
-      ;; ad hoc modeling of buffer mode side effect here
-      (setq rigpa--current-tower-index tower-id))))
-
 (defun rigpa-serialize-tower (tower)
   "A string representation of a tower."
   (let ((tower-height (rigpa-ensemble-size tower))
@@ -142,38 +129,25 @@
       (rigpa--tower-view-narrow tower)
       tower)))
 
-(defun rigpa-render-tower-for-mode-mode (tower &optional major-mode)
+(defun rigpa-render-tower (tower tower-index ground &optional major-mode)
   "Render a text representation of an editing tower in a buffer."
   (interactive)
-  (let* ((ground (current-buffer))
-         (major-mode (or major-mode #'rigpa-meta-mode))
+  (let* ((major-mode (or major-mode #'rigpa-meta-mode))
          (buffer (rigpa-buffer-create (rigpa--buffer-name tower)
                                       major-mode)))
     (with-current-buffer buffer
-      ;; ground buffer is inherited from the original
+      ;; in tower mode, ground buffer is inherited from the original
       ;; to define the chain of reference
-      (setq rigpa--ground-buffer
-            ground)
+      ;; in mode mode, the ground isn't inherited from the
+      ;; current buffer; instead, the current buffer itself becomes
+      ;; the new ground
+      (setq rigpa--ground-buffer ground)
       (rigpa--set-meta-buffer-appearance)
       (insert (rigpa-serialize-tower tower))
-      (rigpa--enter-appropriate-mode))
-    buffer))
-
-(defun rigpa-render-tower (tower &optional major-mode)
-  "Render a text representation of an editing tower in a buffer."
-  (interactive)
-  (let* ((inherited-ground-buffer (rigpa--get-ground-buffer))
-         (major-mode (or major-mode #'rigpa-meta-mode))
-         (buffer (rigpa-buffer-create (rigpa--buffer-name tower)
-                                      major-mode)))
-    (with-current-buffer buffer
-      ;; ground buffer is inherited from the original
-      ;; to define the chain of reference
-      (setq rigpa--ground-buffer
-            inherited-ground-buffer)
-      (rigpa--set-meta-buffer-appearance)
-      (insert (rigpa-serialize-tower tower))
-      (rigpa--enter-appropriate-mode))
+      (rigpa--enter-appropriate-mode)
+      ;; store the tower index in the buffer so it can be read
+      ;; in the tower buffer navigation side effect
+      (setq-local rigpa--tower-index tower-index))
     buffer))
 
 (defun rigpa-flashback-to-last-tower ()
@@ -198,63 +172,47 @@ monadic verb in the 'switch buffer' navigation."
     ;; enter the appropriate level in the new tower
     (rigpa--enter-appropriate-mode)))
 
-(defun rigpa-previous-tower ()
-  "Previous tower"
-  (interactive)
+(defun rigpa--view-tower-wrapper (orig-fn &rest args)
+  "Focus and contextualize the view of the tower, and update the tower
+index in the ground buffer to reflect the selected one."
+  (let ((result (apply orig-fn args)))
+    (let* ((tower-id rigpa--tower-index) ; read from the buffer-local variable
+           (tower (with-current-buffer (rigpa--get-ground-buffer)
+                    (rigpa--tower tower-id))))
+      (rigpa--view-tower tower)
+      (rigpa--update-ground-tower-index tower-id))
+    result))
+
+(defun rigpa--view-tower (tower)
+  "Focus and contextualize the view of the tower."
+  (rigpa--tower-view-narrow tower)
+  (rigpa--tower-view-reflect-ground tower))
+
+(defun rigpa--update-ground-tower-index (tower-id)
+  "Update ground tower index to TOWER-ID."
   (with-current-buffer (rigpa--get-ground-buffer)
-    (let ((tower-id (mod (1- rigpa--current-tower-index)
-                         (rigpa-ensemble-size rigpa--complex))))
-     (rigpa--switch-to-tower tower-id))))
-
-(defun rigpa-next-tower ()
-  "Next tower"
-  (interactive)
-  (with-current-buffer (rigpa--get-ground-buffer)
-    (let ((tower-id (mod (1+ rigpa--current-tower-index)
-                         (rigpa-ensemble-size rigpa--complex))))
-     (rigpa--switch-to-tower tower-id))))
-
-;; probably what we want is:
-;; 1. set up a "primary" buffer ring for all buffers at init time
-;;    and ensure all open buffers in buffer-list are part of it
-;; 2. use buffer-ring-next/previous in buffer mode
-;; 3. for tower mode,
-;;    (1) switch to a new "tower" ring, and
-;;    (2) add a side effect to buffer-ring-next/previous
-;;        to modify the tower index in the ground buffer
-;; Later, worry about moving all of these to "coordinates"
-;; and also about improving the buffer ring interface with
-;; explicit constructors and so on, and performance with
-;; hashes instead of simple conses if it becomes a problem
-(defun rigpa--previous-tower-wrapper (orig-fn &rest args)
-  "Thin wrapper to disregard actual buffer change functions (temporary hack)."
-  (rigpa-previous-tower))
-
-(defun rigpa--next-tower-wrapper (orig-fn &rest args)
-  "Thin wrapper to disregard actual buffer change functions (temporary hack)."
-  (rigpa-next-tower))
+    (setq rigpa--current-tower-index tower-id)))
 
 (defun rigpa--add-meta-tower-side-effects ()
   "Add side effects for primitive mode operations while in meta mode."
   ;; this should lookup the appropriate side-effect based on the coordinates
-  (advice-add #'previous-buffer :around #'rigpa--previous-tower-wrapper)
-  (advice-add #'next-buffer :around #'rigpa--next-tower-wrapper))
+  (advice-add #'switch-to-buffer :around #'rigpa--view-tower-wrapper))
 
 ;; ensure the meta and meta-tower's are straight
 (defun rigpa--remove-meta-tower-side-effects ()
   "Remove side effects for primitive mode operations that were added for meta modes."
-  (advice-remove #'previous-buffer #'rigpa--previous-tower-wrapper)
-  (advice-remove #'next-buffer #'rigpa--next-tower-wrapper))
+  (advice-remove #'switch-to-buffer #'rigpa--view-tower-wrapper))
 
 (defun rigpa-enter-tower-mode ()
   "Enter a buffer containing a textual representation of the
 initial editing tower."
   (interactive)
-  (with-current-buffer (rigpa--get-ground-buffer)
-    (dolist (tower (editing-ensemble-members rigpa--complex))
-      (rigpa-render-tower tower #'rigpa-meta-tower-mode)))
-  ;; TODO: is it necessary to reference ground buffer here?
-  ;;
+  (let* ((ground (rigpa--get-ground-buffer))
+         (towers (with-current-buffer ground
+                   (editing-ensemble-members rigpa--complex))))
+    (dotimes (i (length towers))
+      (let ((tower (nth i towers)))
+        (rigpa-render-tower tower i ground #'rigpa-meta-tower-mode))))
   ;; Store "previous" previous tower to support flashback
   ;; feature seamlessly. This is to get around hydra executing
   ;; functions after exiting rather than before, which loses
@@ -263,10 +221,13 @@ initial editing tower."
   ;; Improve this eventually.
   (setq rigpa--flashback-tower-index rigpa--tower-index-on-entry)
   (setq rigpa--tower-index-on-entry rigpa--current-tower-index)
-  (with-current-buffer (rigpa--get-ground-buffer)
-    (rigpa--switch-to-tower rigpa--current-tower-index))
   (rigpa--add-meta-tower-side-effects)
-  (rigpa--set-ui-for-meta-modes))
+  (rigpa--set-ui-for-meta-modes)
+  (let ((tower-index (with-current-buffer (rigpa--get-ground-buffer)
+                       rigpa--current-tower-index)))
+    (switch-to-buffer
+     (rigpa--buffer-name
+      (rigpa--tower tower-index)))))
 
 (defun rigpa-exit-tower-mode ()
   "Exit tower mode."
@@ -279,40 +240,6 @@ initial editing tower."
     (kill-matching-buffers (concat "^" rigpa-buffer-prefix) nil t)
     (switch-to-buffer ref-buf)))
 
-(defhydra hydra-tower (:idle 1.0
-                       :columns 4
-                       :body-pre (rigpa-enter-tower-mode)
-                       :post (rigpa-exit-tower-mode))
-  "Tower mode"
-  ;; Need a textual representation of the mode tower for these to operate on
-  ("h" rigpa-previous-tower "previous tower")
-  ("j" rigpa-select-next-level "lower level")
-  ("k" rigpa-select-previous-level "higher level")
-  ("l" rigpa-next-tower "next tower")
-  ;; ("H" rigpa-highest-level "first level (recency)")
-  ;; ("J" rigpa-lowest-level "lowest level")
-  ;; ("K" rigpa-highest-level "highest level")
-  ;; ("L" rigpa-lowest-level "last level (recency)")
-  ;; different towers for different "major modes"
-  ;; ("s-o" rigpa-mode-mru "Jump to most recent (like Alt-Tab)" :exit t)
-  ;; ("o" rigpa-mode-mru :exit t)
-  ;; with delete / change etc. we could construct towers and then select towers
-  ;; there could be a maximal tower containing all the levels
-  ;; ("/" rigpa-search "search")
-  ;; move to change ordering of levels, an alternative to recency
-  ;;
-  ;; ffap other window -- open file with this other mode/tower: a formal "major mode"
-  ;; the mode mode, tower mode, and so on recursively makes more sense
-  ;; if we assume that keyboard shortcuts are scarce. this gives us ways to use
-  ;; a small number of keys in any arbitrary configuration
-  ("s-m" rigpa-flashback-to-last-tower "flashback" :exit t)  ; canonical action
-  ("<return>" rigpa-enter-selected-level "enter selected level" :exit t)
-  ("s-<return>" rigpa-enter-selected-level "enter selected level" :exit t)
-  ("i" nil "exit" :exit t)
-  ("<escape>" nil "exit" :exit t))
-
-  ;("s-<return>" rigpa-enter-lower-level "enter lower level" :exit t)
-  ;("s-<escape>" rigpa-enter-higher-level "escape to higher level" :exit t))
 
 (provide 'rigpa-tower-mode)
 ;;; rigpa-tower-mode.el ends here

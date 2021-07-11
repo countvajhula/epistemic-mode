@@ -363,13 +363,15 @@ be interactive itself."
   ;; coordinates and the ground level mode being employed
   (advice-add #'rigpa-line-move-down :around #'rigpa--reload-tower-wrapper)
   (advice-add #'rigpa-line-move-up :around #'rigpa--reload-tower-wrapper)
-  (advice-add #'rigpa-line-change :around #'rigpa--mode-mode-change))
+  (advice-add #'rigpa-line-change :around #'rigpa--mode-mode-change)
+  (advice-add #'switch-to-buffer :around #'rigpa--view-tower-wrapper))
 
 (defun rigpa--remove-meta-side-effects ()
   "Remove side effects for primitive mode operations that were added for meta modes."
   (advice-remove #'rigpa-line-move-down #'rigpa--reload-tower-wrapper)
   (advice-remove #'rigpa-line-move-up #'rigpa--reload-tower-wrapper)
-  (advice-remove #'rigpa-line-change #'rigpa--mode-mode-change))
+  (advice-remove #'rigpa-line-change #'rigpa--mode-mode-change)
+  (advice-remove #'switch-to-buffer #'rigpa--view-tower-wrapper))
 
 ;; TODO: should have a single function that enters
 ;; any meta-level, incl. mode, tower, etc.
@@ -381,9 +383,15 @@ be interactive itself."
 current editing tower."
   (interactive)
   (rigpa--set-ui-for-meta-modes) ; TODO: do this only for meta buffers
-  (rigpa-render-tower-for-mode-mode (rigpa--local-tower))
-  (rigpa--switch-to-tower rigpa--current-tower-index) ; TODO: base this on "state" instead
-  (rigpa--add-meta-side-effects))
+  (rigpa-render-tower (rigpa--local-tower)
+                      rigpa--current-tower-index
+                      (current-buffer))
+  (rigpa--add-meta-side-effects)
+  (let ((tower-index (with-current-buffer (rigpa--get-ground-buffer)
+                       rigpa--current-tower-index)))
+    (switch-to-buffer             ; TODO: base this on "state" instead
+     (rigpa--buffer-name
+      (rigpa--tower tower-index)))))
 
 (defun rigpa-exit-mode-mode ()
   "Exit mode mode."
@@ -397,11 +405,6 @@ current editing tower."
       (kill-matching-buffers (concat "^" rigpa-buffer-prefix) nil t))
     (switch-to-buffer ref-buf)))
 
-;; = "factory defaults", other mode, and search
-
-;; mode mode as the lowest level upon s-Esc, with tower mode above that achieved via s-Esc again, and so on...
-;; i.e. once in any meta mode, you should be able to use the usual L00 machinery incl. e.g. line mode
-;; maybe tower mode should only operate on towers - and mode mode could take advantage of a similar (but more minimal) representation as tower mode currently has
 
 (provide 'rigpa-mode-mode)
 ;;; rigpa-mode-mode.el ends here
